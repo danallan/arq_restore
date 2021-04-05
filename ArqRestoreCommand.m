@@ -610,7 +610,7 @@
 }
 
 - (BOOL)restore:(NSArray *)args error:(NSError **)error {
-    if ([args count] != 5 && [args count] != 6) {
+    if ([args count] != 6 && [args count] != 7) {
         SETNSERROR([self errorDomain], ERROR_USAGE, @"invalid arguments");
         return NO;
     }
@@ -622,6 +622,7 @@
     
     NSString *theComputerUUID = [args objectAtIndex:3];
     NSString *theBucketUUID = [args objectAtIndex:4];
+    NSString *theCommitBK = [args objectAtIndex:5];
     
     NSString *theEncryptionPassword = [self readPasswordWithPrompt:@"enter encryption password:" error:error];
     if (theEncryptionPassword == nil) {
@@ -660,10 +661,35 @@
     if (repo == nil) {
         return NO;
     }
-    BlobKey *commitBlobKey = [repo headBlobKey:error];
+    BlobKey *commitBlobKey = nil;
+    if ([theCommitBK isEqualToString:@"HEAD"]) {
+        commitBlobKey = [repo headBlobKey:error];
+        printf("commit   %s (HEAD)\n", [[commitBlobKey sha1] UTF8String]);
+    }
+    else {
+        NSArray *blobKeys = [repo allCommitBlobKeys:error];
+        if (blobKeys == nil) {
+            return NO;
+        }
+
+        for (BlobKey *bK in blobKeys) {
+            Commit *commit = [repo commitForBlobKey:bK error:error];
+
+            if (![[[commit treeBlobKey] sha1] isEqualToString:theCommitBK]) {
+                continue;
+            }
+
+            NSString *dateString = [NSDateFormatter localizedStringFromDate:[commit creationDate]
+                                                    dateStyle:NSDateFormatterShortStyle
+                                                    timeStyle:NSDateFormatterFullStyle];
+            printf("commit   %s (%s)\n", [[bK sha1] UTF8String], [dateString UTF8String]);
+            commitBlobKey = bK;
+        }
+    }
     if (commitBlobKey == nil) {
         return NO;
     }
+
     Commit *commit = [repo commitForBlobKey:commitBlobKey error:error];
     if (commit == nil) {
         return NO;
@@ -671,8 +697,8 @@
 
     BlobKey *treeBlobKey = [commit treeBlobKey];
     NSString *nodeName = nil;
-    if ([args count] == 6) {
-        NSString *path = [args objectAtIndex:5];
+    if ([args count] == 7) {
+        NSString *path = [args objectAtIndex:6];
         if ([path hasPrefix:@"/"]) {
             path = [path substringFromIndex:1];
         }
@@ -710,7 +736,7 @@
         }
     }
 
-    NSString *restoreFileName = [args count] == 6 ? [[args objectAtIndex:5] lastPathComponent] : [[matchingBucket localPath] lastPathComponent];
+    NSString *restoreFileName = [args count] == 7 ? [[args objectAtIndex:6] lastPathComponent] : [[matchingBucket localPath] lastPathComponent];
     NSString *destinationPath = [[[NSFileManager defaultManager] currentDirectoryPath] stringByAppendingPathComponent:restoreFileName];
     if ([[NSFileManager defaultManager] fileExistsAtPath:destinationPath]) {
         SETNSERROR([self errorDomain], -1, @"%@ already exists", destinationPath);
