@@ -104,6 +104,8 @@
         return [self restore:args error:error];
     } else if ([cmd isEqualToString:@"clearcache"]) {
         return [self clearCache:args error:error];
+    } else if ([cmd isEqualToString:@"compareAll"]) {
+        return [self compareAll:args error:error];
     } else {
         SETNSERROR([self errorDomain], ERROR_USAGE, @"unknown command: %@", cmd);
         return NO;
@@ -342,6 +344,183 @@
     printf("%s\n", [xmlString UTF8String]);
     return YES;
 }
+- (BOOL)compareAll:(NSArray *)args error:(NSError **)error {
+    if ([args count] != 5) {
+        SETNSERROR([self errorDomain], ERROR_USAGE, @"invalid arguments");
+        return NO;
+    }
+    Target *target = [[TargetFactory sharedTargetFactory] targetWithNickname:[args objectAtIndex:2]];
+    if (target == nil) {
+        SETNSERROR([self errorDomain], ERROR_NOT_FOUND, @"target not found");
+        return NO;
+    }
+
+    NSString *theComputerUUID = [args objectAtIndex:3];
+    NSString *theBucketUUID = [args objectAtIndex:4];
+
+    NSString *theEncryptionPassword = [self readPasswordWithPrompt:@"enter encryption password:" error:error];
+    if (theEncryptionPassword == nil) {
+        return NO;
+    }
+
+    BackupSet *backupSet = [self backupSetForTarget:target computerUUID:theComputerUUID error:error];
+    if (backupSet == nil) {
+        return NO;
+    }
+
+    // Reset Target:
+    target = [backupSet target];
+
+    NSArray *buckets = [Bucket bucketsWithTarget:target computerUUID:theComputerUUID encryptionPassword:theEncryptionPassword targetConnectionDelegate:nil error:error];
+    if (buckets == nil) {
+        return NO;
+    }
+    Bucket *matchingBucket = nil;
+    for (Bucket *bucket in buckets) {
+        printf("BUCKET: %s\n", [[bucket bucketName] UTF8String]);
+        if ([[bucket bucketUUID] isEqualToString:theBucketUUID]) {
+            matchingBucket = bucket;
+            break;
+        }
+    }
+    if (matchingBucket == nil) {
+        SETNSERROR([self errorDomain], ERROR_NOT_FOUND, @"folder %@ not found", theBucketUUID);
+        return NO;
+    }
+
+    printf("target   %s\n", [[target endpointDisplayName] UTF8String]);
+    printf("computer %s\n", [theComputerUUID UTF8String]);
+    printf("folder   %s\n", [theBucketUUID UTF8String]);
+
+    Repo *repo = [[[Repo alloc] initWithBucket:matchingBucket encryptionPassword:theEncryptionPassword targetConnectionDelegate:nil repoDelegate:nil activityListener:nil error:error] autorelease];
+    if (repo == nil) {
+        return NO;
+    }
+
+    BlobKey *headBlobKey = [repo headBlobKey:error];
+    if (headBlobKey == nil) {
+        return NO;
+    }
+    Commit *headCommit = [repo commitForBlobKey:headBlobKey error:error];
+    if (headCommit == nil) {
+        return NO;
+    }
+
+    // generate a list of files in the most recent backup (headCommit)
+    NSMutableDictionary *headFileList = [self filesFromCommit:headCommit repo:repo error:error];
+    printf("\nHEAD File list size: %lu\n", [headFileList count]);
+
+    NSArray *blobKeys = [repo allCommitBlobKeys:error];
+    if (blobKeys == nil) {
+        return NO;
+    }
+
+    // fetch all of the commits for each blobKey
+    NSMutableArray *commits = [NSMutableArray arrayWithCapacity:[blobKeys count]];
+    [blobKeys enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
+        id mapObj = [repo commitForBlobKey:obj error:error];
+        [commits addObject:mapObj];
+    }];
+
+    // sort the commits in ascending order (oldest first)
+    NSSortDescriptor *creationDateDescriptor = [[[NSSortDescriptor alloc] initWithKey:@"creationDate" ascending:YES] autorelease];
+    NSArray *sortedCommits = [commits sortedArrayUsingDescriptors:@[creationDateDescriptor]];
+
+    for (Commit *commit in sortedCommits) {
+        NSString *dateString = [NSDateFormatter localizedStringFromDate:[commit creationDate]
+                                                dateStyle:NSDateFormatterShortStyle
+                                                timeStyle:NSDateFormatterFullStyle];
+        printf("\n%s\n", [dateString UTF8String]);
+
+        // generate a list of files in the most recent backup (headCommit)
+        NSMutableDictionary *fileList = [self filesFromCommit:commit repo:repo error:error];
+        BlobKey *bK = [commit treeBlobKey];
+
+        printf(" ^- BlobKey %s, size %lu\n", [[bK sha1] UTF8String], [fileList count]);
+
+        [self filesChangedInHead:headFileList fromOld:fileList];
+    }
+
+    return YES;
+}
+
+- (void) filesChangedInHead:(NSMutableDictionary *)headFileList fromOld:(NSMutableDictionary *)oldFileList {
+    __block long newCount = 0;
+    long oldCount = [oldFileList count];
+    long headCount = [headFileList count];
+    [headFileList enumerateKeysAndObjectsUsingBlock:^(id headFile, id headBlobs, BOOL *stop) {
+        // fetch file blobs from old backup set
+        NSString *oldBlobs = [oldFileList objectForKey:headFile];
+
+        // file in HEAD doesn't exist in older backup set, so it's new
+        if (oldBlobs == nil) {
+            newCount++;
+            return;
+        }
+
+        if (headBlobs != [NSNull null]  && ![oldBlobs isEqualToString:headBlobs]) {
+            printf("    DIFF %s\n", [headFile UTF8String]);
+            printf("     OLD BLOB: %s\n", [oldBlobs UTF8String]);
+            printf("     NEW BLOB: %s\n", [headBlobs UTF8String]);
+            [headFileList setObject:[NSNull null] forKey:headFile];
+        }
+
+        // remove file from old backup set
+        [oldFileList removeObjectForKey:headFile];
+    }];
+
+    // any remaining files don't exist in HEAD set
+    long missingFromHead = [oldFileList count];
+    for (id oldFile in oldFileList) {
+        printf("    NOT IN HEAD: %s\n", [oldFile UTF8String]);
+    };
+
+    if (oldCount + newCount != headCount + missingFromHead) {
+        printf("    COUNT DISAGREEMENT: %ld, %ld, %ld, %ld\n", oldCount, newCount, headCount, missingFromHead);
+    }
+}
+
+- (NSMutableDictionary *) filesFromCommit:(Commit *)commit repo:(Repo *)theRepo error:(NSError **) error{
+    Tree *rootTree = [theRepo treeForBlobKey:[commit treeBlobKey] error:error];
+    NSMutableDictionary *files = [NSMutableDictionary dictionary];
+    [self generateFileList:files fromTree:rootTree repo:theRepo relativePath:@"" error:error];
+    return files;
+}
+- (BOOL)generateFileList:(NSMutableDictionary *)fileList fromTree:(Tree *)theTree repo:(Repo *)theRepo relativePath:(NSString *)theRelativePath error:(NSError **)error {
+    if (theTree == nil) {
+        return NO;
+    }
+    for (NSString *childName in [theTree childNodeNames]) {
+        NSString *childRelativePath = [theRelativePath stringByAppendingFormat:@"/%@", childName];
+        Node *childNode = [theTree childNodeWithName:childName];
+        if ([childNode isTree]) {
+            HSLogDebug(@"descending into %s:\n", [childRelativePath UTF8String]);
+            Tree *childTree = [theRepo treeForBlobKey:[childNode treeBlobKey] error:error];
+            if (![self generateFileList:fileList
+                               fromTree:childTree
+                                   repo:theRepo
+                           relativePath:childRelativePath
+                                  error:error]) {
+                return NO;
+            }
+        } else {
+            NSArray *dataBlobs = [childNode dataBlobKeys];
+            NSMutableString *blobString = [NSMutableString string];
+            for (BlobKey *blob in dataBlobs) {
+                [blobString appendString:[blob sha1]];
+            }
+            NSString *finalBlobString = [NSString stringWithString:blobString];
+            [fileList setObject:finalBlobString forKey:childRelativePath];
+            HSLogDebug(@"ADDED %s: %s\n", [finalBlobString UTF8String], [childRelativePath UTF8String]);
+        }
+    }
+    return YES;
+}
+
+
+
+
+
 - (BOOL)listTree:(NSArray *)args error:(NSError **)error {
     if ([args count] != 5) {
         SETNSERROR([self errorDomain], ERROR_USAGE, @"invalid arguments");

@@ -51,6 +51,8 @@ static void printUsage(const char *exeName) {
     fprintf(stderr, "\t%s [-l loglevel] restore <target_nickname> <computer_uuid> <folder_uuid> [relative_path]\n", exeName);
     fprintf(stderr, "\t%s [-l loglevel] clearcache <target_nickname>\n", exeName);
     fprintf(stderr, "\n");
+    fprintf(stderr, "\t%s [-l loglevel] compareAll <target_nickname> <computer_uuid> <folder_uuid>\n", exeName);
+    fprintf(stderr, "\n");
     fprintf(stderr, "log levels: none, error, warn, info, and debug\n");
     fprintf(stderr, "log output: ~/Library/Logs/arq_restorer\n");
 }
