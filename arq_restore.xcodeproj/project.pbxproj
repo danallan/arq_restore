@@ -1690,12 +1690,12 @@
 				GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/libssh2/include",
-					/usr/local/ssl/include,
+					"/usr/local/ssl/macos-x86_64/include",
 					"$(PROJECT_DIR)",
 				);
 				INSTALL_PATH = /usr/local/bin;
 				LIBRARY_SEARCH_PATHS = (
-					/usr/local/ssl/lib,
+					"/usr/local/ssl/macos-x86_64/lib",
 					"$(inherited)",
 				);
 				PRODUCT_NAME = arq_restore;
@@ -1718,12 +1718,12 @@
 				GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/libssh2/include",
-					/usr/local/ssl/include,
+					"/usr/local/ssl/macos-x86_64/include",
 					"$(PROJECT_DIR)",
 				);
 				INSTALL_PATH = /usr/local/bin;
 				LIBRARY_SEARCH_PATHS = (
-					/usr/local/ssl/lib,
+					"/usr/local/ssl/macos-x86_64/lib",
 					"$(inherited)",
 				);
 				PRODUCT_NAME = arq_restore;
